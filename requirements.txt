@@ -1,5 +1,5 @@
-discord.py[voice]
+py-cord[voice]
 google-genai
+groq
 edge-tts
 aiohttp
-PyNaCl
