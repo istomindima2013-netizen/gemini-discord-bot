@@ -6,9 +6,9 @@ from google import genai
 from aiohttp import web
 import edge_tts
 
-# Веб-сервер для Render (Keep-Alive)
+# 🌐 Минимальный веб-сервер для прохождения проверки Render
 async def handle_ping(request):
-    return web.Response(text="GeminiBot is active!")
+    return web.Response(text="GeminiBot is running!")
 
 async def start_web_server():
     app = web.Application()
@@ -19,6 +19,7 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+# 🤖 Инициализация Gemini и Discord
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -29,88 +30,93 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="\\", intents=intents)
 
-# Хранилище диалогов (истории контекста) для каждого текстового канала
-channel_chats = {}
-
-def get_chat_session(channel_id):
-    """Создает или возвращает существующий чат с памятью контекста"""
-    if channel_id not in channel_chats:
-        channel_chats[channel_id] = ai_client.chats.create(model='gemini-2.5-flash')
-    return channel_chats[channel_id]
-
+# 🎙️ Функция озвучивания ответа в голосе
 async def speak_in_vc(vc, text):
     short_text = text[:300]
     tts_file = "voice_response.mp3"
     tts = edge_tts.Communicate(short_text, "ru-RU-DmitryNeural")
     await tts.save(tts_file)
-    
+
     if vc.is_playing():
         vc.stop()
     vc.play(discord.FFmpegPCMAudio(tts_file))
 
+# 📜 Чтение истории сообщений канала (для контекста)
+async def get_chat_history(channel, limit=10):
+    history = []
+    async for msg in channel.history(limit=limit):
+        if msg.author.bot and msg.author != bot.user:
+            continue
+        author_name = msg.author.display_name
+        history.append(f"{author_name}: {msg.content}")
+
+    history.reverse()  # Хронологический порядок
+    return "\n".join(history)
+
+# 🔌 Команда подключения к голосовому каналу
 @bot.command(name="Geminijoin")
 async def gemini_join(ctx):
     if ctx.author.voice:
         await ctx.author.voice.channel.connect()
-        await ctx.send("Зашёл в голосовой канал!")
+        await ctx.reply("Зашёл в голосовой канал! Теперь я могу отвечать вам голосом.")
     else:
-        await ctx.send("Сначала зайди в голосовой канал!")
+        await ctx.reply("Сначала зайдите в голосовой канал!")
 
+# 🔌 Команда отключения от голосового канала
 @bot.command(name="Geminileave")
 async def gemini_leave(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
-        await ctx.send("Вышел из голосового канала.")
+        await ctx.reply("Вышел из голосового канала.")
 
-@bot.command(name="Geminireset")
-async def gemini_reset(ctx):
-    """Очистить память диалога в текущем канале"""
-    channel_id = ctx.channel.id
-    if channel_id in channel_chats:
-        del channel_chats[channel_id]
-    await ctx.send("История диалога в этом канале сброшена!")
-
+# 💬 Основная команда общения \Gemini
 @bot.command(name="Gemini")
 async def gemini_ask(ctx, *, question: str = None):
-    if not question:
-        await ctx.send("Напиши вопрос после команды!")
-        return
-
     async with ctx.typing():
         try:
-            # Берем чат канала — он помнит все предыдущие сообщения!
-            chat = get_chat_session(ctx.channel.id)
-            response = chat.send_message(question)
+            # Собираем последние 10 сообщений чата для памяти
+            chat_context = await get_chat_history(ctx.channel, limit=10)
+
+            full_prompt = (
+                f"Вот история последних сообщений в этом чате Discord:\n"
+                f"{chat_context}\n\n"
+                f"Ответь на последний вопрос/сообщение с учётом этой истории."
+            )
+
+            response = ai_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=full_prompt
+            )
             text_reply = response.text
 
-            await ctx.send(text_reply)
+            # Отвечаем прямо с цитированием сообщения пользователя (reply)
+            await ctx.reply(text_reply)
 
-            # Озвучка, если бот в голосовом канале
+            # Если бот в голосовом канале — озвучиваем ответ
             vc = ctx.guild.voice_client
             if vc and vc.is_connected():
                 await speak_in_vc(vc, text_reply)
 
         except Exception as e:
-            await ctx.send(f"Ошибка API: {e}")
+            await ctx.reply(f"Произошла ошибка API: {e}")
 
+# 🏷️ Поддержка обычного упоминания @GeminiBot
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Обработка упоминания @GeminiBot
     if bot.user.mentioned_in(message) and not message.content.startswith('\\'):
         clean_prompt = message.content.replace(f'<@{bot.user.id}>', '').strip()
-        if clean_prompt:
-            ctx = await bot.get_context(message)
-            await gemini_ask(ctx, question=clean_prompt)
-            return
+        ctx = await bot.get_context(message)
+        await gemini_ask(ctx, question=clean_prompt)
+        return
 
     await bot.process_commands(message)
 
 @bot.event
 async def on_ready():
-    print(f"Бот {bot.user} запущен и готов к работе!")
+    print(f"Бот {bot.user} успешно запущен!")
     bot.loop.create_task(start_web_server())
 
 if __name__ == "__main__":
