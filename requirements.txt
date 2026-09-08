@@ -1,0 +1,5 @@
+discord.py[voice]
+google-genai
+edge-tts
+aiohttp
+PyNaCl
